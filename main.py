@@ -5,7 +5,9 @@ import json
 
 from vllm import LLM, SamplingParams
 
-llm = LLM(model="Qwen/Qwen3-8B-AWQ", gpu_memory_utilization=0.8)
+# llm = LLM(model="Qwen/Qwen3-8B-AWQ", gpu_memory_utilization=0.8)
+# llm = LLM(model="Qwen3VL-8B-Instruct-Q8_0/Qwen3VL-8B-Instruct-Q8_0.gguf", gpu_memory_utilization=0.8)
+llm = LLM(model="cpatonn/Qwen3-VL-8B-Instruct-AWQ-4bit", gpu_memory_utilization=0.6, max_model_len = 24000)
 sampling_params = SamplingParams(temperature=0.7, top_p=0.8, top_k=20, min_p=0, max_tokens=600)
 
 intents = discord.Intents.default()
