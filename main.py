@@ -5,11 +5,20 @@ load_dotenv(".env")
 import discord
 import os, sys
 import json
+from pydantic import BaseModel
+
+class LLMResponse(BaseModel):
+    message: str
+    image_promp: str
+
+json_schema = LLMResponse.model_json_schema()
 
 from vllm import LLM, SamplingParams
+from vllm.sampling_params import GuidedDecodingParams
 
-llm = LLM(model="cpatonn/Qwen3-VL-8B-Instruct-AWQ-4bit", gpu_memory_utilization=0.7, max_model_len = 15000)
-sampling_params = SamplingParams(temperature=0.7, top_p=0.8, top_k=20, min_p=0, max_tokens=1000)
+guided_decoding_params = GuidedDecodingParams(json=json_schema)
+llm = LLM(model="cpatonn/Qwen3-VL-8B-Instruct-AWQ-4bit", gpu_memory_utilization=0.7, max_model_len = 14000)
+sampling_params = SamplingParams(temperature=0.7, top_p=0.8, top_k=20, min_p=0, max_tokens=1000, guided_decoding=guided_decoding_params)
 
 import torch
 from diffusers import StableDiffusion3Pipeline
@@ -39,6 +48,7 @@ pipe.transformer = torch.compile(pipe.transformer, mode="max-autotune", fullgrap
 pipe.vae.decode = torch.compile(pipe.vae.decode, mode="max-autotune", fullgraph=True)
 
 # Warm Up
+print("Warming up")
 for _ in range(3):
     _ = pipe(prompt="a photo of a cat holding a sign that says hello world", generator=torch.manual_seed(1))
 
@@ -65,22 +75,7 @@ async def on_message(message: discord.message.Message):
     ]
     async for message in message.channel.history(limit=20):
         if message.author == client.user:
-            content = [
-                {
-                    "type": "text",
-                    "text": message.content
-                }
-            ]
-
-            for attachment in message.attachments:
-                content.append({
-                    "type": "image_url",
-                    "image_url": {
-                        "url": attachment.proxy_url
-                    }
-                })
-            
-            messages.append({"role": "assistant", "content": content })
+            messages.append({"role": "assistant", "content": message.content })
 
         else:
             content = [
@@ -91,12 +86,17 @@ async def on_message(message: discord.message.Message):
             ]
 
             for attachment in message.attachments:
-                content.append({
-                    "type": "image_url",
-                    "image_url": {
-                        "url": attachment.proxy_url
-                    }
-                })
+                if attachment.filename.endswith(".png") or \
+                        attachment.filename.endswith(".webp") or \
+                        attachment.filename.endswith(".jpg") or \
+                        attachment.filename.endswith(".jpeg"):
+
+                    content.append({
+                        "type": "image_url",
+                        "image_url": {
+                            "url": attachment.proxy_url
+                        }
+                    })
             
             messages.append({"role": "user", "content": content})
     
@@ -121,7 +121,9 @@ in the "image_prompt" field in your output JSON. You are not allowed to create s
 this is a public server. The image will be attached to the message.
 
 If the prompt that the user is asking for is unsafe, do not generate the image and let the user
-know what was wrong
+know what was wrong.
+
+You do not have the ability to look at the images you previously generated.
 '''
         }
     )
@@ -134,7 +136,7 @@ know what was wrong
             chat_template_kwargs={ "enable_thinking": False },
             use_tqdm=False
         )
-        
+
         response = json.loads(outputs[0].outputs[0].text)
 
         if "image_prompt" in response:
