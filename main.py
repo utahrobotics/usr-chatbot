@@ -5,52 +5,64 @@ load_dotenv(".env")
 import discord
 import os, sys
 import json
+from typing import Optional
 from pydantic import BaseModel
 
-class LLMResponse(BaseModel):
-    message: str
-    image_promp: str
 
-json_schema = LLMResponse.model_json_schema()
+class LLMResponseImageGen(BaseModel):
+    message: str
+    image_prompt: str | None = None
+
+
+class LLMResponseNoImageGen(BaseModel):
+    message: str
+
 
 from vllm import LLM, SamplingParams
-from vllm.sampling_params import GuidedDecodingParams
+from vllm.sampling_params import StructuredOutputsParams
 
-guided_decoding_params = GuidedDecodingParams(json=json_schema)
-llm = LLM(model="cpatonn/Qwen3-VL-8B-Instruct-AWQ-4bit", gpu_memory_utilization=0.7, max_model_len = 14000)
-sampling_params = SamplingParams(temperature=0.7, top_p=0.8, top_k=20, min_p=0, max_tokens=1000, guided_decoding=guided_decoding_params)
+disable_sd = "DISABLE_SD" in os.environ
 
-import torch
-from diffusers import StableDiffusion3Pipeline
-import random
+print(LLMResponseImageGen.model_json_schema())
+structured_outputs = StructuredOutputsParams(json=LLMResponseNoImageGen.model_json_schema() if disable_sd else LLMResponseImageGen.model_json_schema())
+llm = LLM(model="cpatonn/Qwen3-VL-8B-Instruct-AWQ-4bit", gpu_memory_utilization=0.7, max_model_len=15000)
+sampling_params = SamplingParams(temperature=0.7, top_p=0.8, top_k=20, min_p=0, max_tokens=1000, structured_outputs=structured_outputs)
 
-torch.set_float32_matmul_precision("high")
+if not disable_sd:
+    import torch
+    from diffusers import StableDiffusion3Pipeline
+    import random
 
-torch._inductor.config.conv_1x1_as_mm = True
-torch._inductor.config.coordinate_descent_tuning = True
-torch._inductor.config.epilogue_fusion = False
-torch._inductor.config.coordinate_descent_check_all_directions = True
+    # torch.set_float32_matmul_precision("high")
 
-pipe = StableDiffusion3Pipeline.from_pretrained(
-    "stabilityai/stable-diffusion-3-medium-diffusers",
-    text_encoder_3=None,
-    tokenizer_3=None,
-    torch_dtype=torch.float16
-).to("cuda")
+    # torch._inductor.config.conv_1x1_as_mm = True
+    # torch._inductor.config.coordinate_descent_tuning = True
+    # torch._inductor.config.epilogue_fusion = False
+    # torch._inductor.config.coordinate_descent_check_all_directions = True
 
+    pipe = StableDiffusion3Pipeline.from_pretrained(
+        "stabilityai/stable-diffusion-3-medium-diffusers",
+        text_encoder_3=None,
+        tokenizer_3=None,
+        torch_dtype=torch.float16
+    ).to("cuda")
+    # pipe.vae = AutoencoderTiny.from_pretrained("madebyollin/taesd3", torch_dtype=torch.float16)
 
-pipe.set_progress_bar_config(disable=True)
+    # pipe.enable_model_cpu_offload()
+    pipe.set_progress_bar_config(disable=True)
 
-pipe.transformer.to(memory_format=torch.channels_last)
-pipe.vae.to(memory_format=torch.channels_last)
+    # pipe.transformer.to(memory_format=torch.channels_last)
+    # pipe.vae.to(memory_format=torch.channels_last)
 
-pipe.transformer = torch.compile(pipe.transformer, mode="max-autotune", fullgraph=True)
-pipe.vae.decode = torch.compile(pipe.vae.decode, mode="max-autotune", fullgraph=True)
+    # pipe.transformer = torch.compile(pipe.transformer, mode="max-autotune", fullgraph=True)
+    # pipe.vae.decode = torch.compile(pipe.vae.decode, mode="max-autotune", fullgraph=True)
 
-# Warm Up
-print("Warming up")
-for _ in range(3):
-    _ = pipe(prompt="a photo of a cat holding a sign that says hello world", generator=torch.manual_seed(1))
+    # # Warm Up
+    # print("Warming up")
+    # for _ in range(3):
+    #     _ = pipe(prompt="a photo of a cat holding a sign that says hello world", generator=torch.manual_seed(1))
+else:
+    pipe = None
 
 intents = discord.Intents.default()
 intents.message_content = True
@@ -71,8 +83,7 @@ async def on_message(message: discord.message.Message):
     if client.user not in message.mentions:
         return
 
-    messages = [
-    ]
+    messages = []
     async for message in message.channel.history(limit=20):
         if message.author == client.user:
             messages.append({"role": "assistant", "content": message.content })
@@ -100,24 +111,33 @@ async def on_message(message: discord.message.Message):
             
             messages.append({"role": "user", "content": content})
     
-    messages.append(
-        {
-            "role": "system",
-            "content": f'''# Background
+    background = f'''# Background
 Your name is T.E.R.I, a funny AI Chatbot for the Utah Student Robotics discord server, named after the existing robot T.E.R.I.
 The user messages come in JSON with fields "username" and "message", and the messages are in channel name: {message.channel.name}. You do not have access
-to other channels.
+to other channels.'''
+    
+    if pipe is None:
+        system_message = f'''{background}
 
 # Style Guide
 You only output valid JSON in the following format:
 {{
-    "message": <a playful and brief message to send>,
-    "image_prompt": <OPTIONAL. A prompt to create an image with>
+    "message": <a playful and brief message to send>
+}}
+You do not have the ability to generate images right now. That feature is under maintenance.
+'''
+    else:
+        system_message = f'''{background}
+
+# Style Guide
+You only output valid JSON in the following format:
+{{
+    "message": <a playful and brief message to send>
 }}
 
 # Image Generation
 If the user *explicitly* requests an image to be generated, write the image generation prompt
-in the "image_prompt" field in your output JSON. You are not allowed to create sexual or harmful images since
+in the "image_prompt" field in your output JSON. This is an optional field. You are not allowed to create sexual or harmful images since
 this is a public server. The image will be attached to the message.
 
 If the prompt that the user is asking for is unsafe, do not generate the image and let the user
@@ -125,6 +145,11 @@ know what was wrong.
 
 You do not have the ability to look at the images you previously generated.
 '''
+
+    messages.append(
+        {
+            "role": "system",
+            "content": system_message
         }
     )
     messages.reverse()
@@ -140,6 +165,7 @@ You do not have the ability to look at the images you previously generated.
         response = json.loads(outputs[0].outputs[0].text)
 
         if "image_prompt" in response:
+            assert not disable_sd
             image_prompt = response["image_prompt"]
             print(f'Generating image: "{image_prompt}"')
             image = pipe(prompt=image_prompt, generator=torch.manual_seed(random.randint(0, 10240))).images[0]
