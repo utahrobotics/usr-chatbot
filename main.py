@@ -25,7 +25,7 @@ disable_sd = "DISABLE_SD" in os.environ
 
 print(LLMResponseImageGen.model_json_schema())
 structured_outputs = StructuredOutputsParams(json=LLMResponseNoImageGen.model_json_schema() if disable_sd else LLMResponseImageGen.model_json_schema())
-llm = LLM(model="cpatonn/Qwen3-VL-8B-Instruct-AWQ-4bit", gpu_memory_utilization=0.7, max_model_len=15000)
+llm = LLM(model="cpatonn/Qwen3-VL-8B-Instruct-AWQ-4bit", gpu_memory_utilization=0.7, max_model_len=15000, enable_sleep_mode=True)
 sampling_params = SamplingParams(temperature=0.7, top_p=0.8, top_k=20, min_p=0, max_tokens=1000, structured_outputs=structured_outputs)
 
 if not disable_sd:
@@ -166,11 +166,13 @@ You do not have the ability to look at the images you previously generated.
 
         if "image_prompt" in response:
             assert not disable_sd
+            llm.sleep(level=1)
             image_prompt = response["image_prompt"]
             print(f'Generating image: "{image_prompt}"')
             image = pipe(prompt=image_prompt, generator=torch.manual_seed(random.randint(0, 10240))).images[0]
             image.save("/tmp/tmp_sd_output.png")
             await message.channel.send(response["message"], file=discord.File("/tmp/tmp_sd_output.png"))
+            llm.wake_up()
         else:
             await message.channel.send(response["message"])
     
